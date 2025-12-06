@@ -22,10 +22,14 @@ app.use(express.static('public'));
 wss.on('connection', (ws) => {
   console.log('New client connected. Total clients:', wss.clients.size);
 
+  // Check if this is the first connection (GM)
+  const isGM = wss.clients.size === 1;
+  
   // Send current game state to new client
   ws.send(JSON.stringify({
     type: 'init',
-    state: gameState
+    state: gameState,
+    isGM: isGM
   }));
 
   ws.on('message', (message) => {

@@ -29,10 +29,15 @@
       const [panStart, setPanStart] = useState({ x: 0, y: 0 });
       const [gmMode, setGmMode] = useState(false);
       const [connected, setConnected] = useState(false);
-      const [clientCount, setClientCount] = useState(0);
+      const [isGM, setIsGM] = useState(false);
+      const [isTouchDevice, setIsTouchDevice] = useState(false);
+      const isReceivingUpdate = useRef(false);
 
       // WebSocket connection
       useEffect(() => {
+        // Detect touch device
+        setIsTouchDevice('ontouchstart' in window || navigator.maxTouchPoints > 0);
+        
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}`);
         wsRef.current = ws;
@@ -47,6 +52,7 @@
           
           switch(data.type) {
             case 'init':
+              setIsGM(data.isGM);
               if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
               if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
               if (data.state.mapImage) {
@@ -57,8 +63,12 @@
               break;
 
             case 'update':
+              isReceivingUpdate.current = true;
               setTokenPos(data.tokenPos);
               setExploredAreas(data.exploredAreas);
+              setTimeout(() => {
+                isReceivingUpdate.current = false;
+              }, 50);
               break;
 
             case 'map':
@@ -114,11 +124,11 @@
 
       // Add current position to explored areas and sync
       useEffect(() => {
-        if (mapImage && !gmMode) {
+        if (mapImage && !gmMode && !isReceivingUpdate.current) {
           const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
           setExploredAreas(newExplored);
           
-          // Send update to server
+          // Send update to server (but not if we just received an update)
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({
               type: 'move',
@@ -127,11 +137,13 @@
             }));
           }
         }
-      }, [tokenPos, mapImage, revealRadius]);
+      }, [tokenPos, mapImage, revealRadius, gmMode]);
 
       // Handle keyboard movement
       useEffect(() => {
         const handleKeyDown = (e) => {
+          if (isReceivingUpdate.current) return;
+          
           const step = 0.02;
           setTokenPos(prev => {
             let newPos = { ...prev };
@@ -273,6 +285,61 @@
         setIsPanning(false);
       };
 
+      // Touch handlers for mobile
+      const handleTouchStart = (e) => {
+        if (e.touches.length === 1) {
+          // Single touch - move token
+          const rect = e.target.getBoundingClientRect();
+          const touch = e.touches[0];
+          updateTokenFromTouch(touch, rect);
+        } else if (e.touches.length === 2) {
+          // Two fingers - pan
+          setIsPanning(true);
+          const touch = e.touches[0];
+          setPanStart({ x: touch.clientX - panOffset.x, y: touch.clientY - panOffset.y });
+        }
+      };
+
+      const handleTouchMove = (e) => {
+        e.preventDefault();
+        if (e.touches.length === 1 && !isPanning) {
+          // Single touch - move token
+          const rect = e.target.getBoundingClientRect();
+          const touch = e.touches[0];
+          updateTokenFromTouch(touch, rect);
+        } else if (e.touches.length === 2 || isPanning) {
+          // Two fingers - pan
+          const touch = e.touches[0];
+          setPanOffset({
+            x: touch.clientX - panStart.x,
+            y: touch.clientY - panStart.y
+          });
+        }
+      };
+
+      const handleTouchEnd = () => {
+        setIsPanning(false);
+      };
+
+      const updateTokenFromTouch = (touch, rect) => {
+        if (!mapImage || isReceivingUpdate.current) return;
+        
+        const canvas = canvasRef.current;
+        const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
+        const scaledWidth = mapImage.width * scale;
+        const scaledHeight = mapImage.height * scale;
+        const offsetX = (canvas.width - scaledWidth) / 2 + panOffset.x;
+        const offsetY = (canvas.height - scaledHeight) / 2 + panOffset.y;
+
+        const x = (touch.clientX - rect.left - offsetX) / scaledWidth;
+        const y = (touch.clientY - rect.top - offsetY) / scaledHeight;
+
+        if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+          const newPos = { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+          setTokenPos(newPos);
+        }
+      };
+
       return (
         <div className="w-full h-screen bg-gray-900 flex flex-col">
           <div className="bg-gray-800 border-b border-gray-700 p-4">
@@ -296,28 +363,32 @@
                   <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                 </label>
 
-                <label className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded cursor-pointer transition-colors">
-                  <input 
-                    type="checkbox" 
-                    checked={gmMode}
-                    onChange={(e) => setGmMode(e.target.checked)}
-                    className="w-4 h-4"
-                  />
-                  <span>GM Mode (No Fog)</span>
-                </label>
-                
-                <div className="flex items-center gap-2">
-                  <label className="text-gray-300 text-sm">Reveal Radius:</label>
-                  <input 
-                    type="range" 
-                    min="40" 
-                    max="200" 
-                    value={revealRadius} 
-                    onChange={(e) => setRevealRadius(Number(e.target.value))}
-                    className="w-32"
-                  />
-                  <span className="text-gray-300 text-sm w-12">{revealRadius}px</span>
-                </div>
+                {isGM && (
+                  <>
+                    <label className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded cursor-pointer transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={gmMode}
+                        onChange={(e) => setGmMode(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <span>GM Mode (No Fog)</span>
+                    </label>
+                    
+                    <div className="flex items-center gap-2">
+                      <label className="text-gray-300 text-sm">Reveal Radius:</label>
+                      <input 
+                        type="range" 
+                        min="40" 
+                        max="200" 
+                        value={revealRadius} 
+                        onChange={(e) => setRevealRadius(Number(e.target.value))}
+                        className="w-32"
+                      />
+                      <span className="text-gray-300 text-sm w-12">{revealRadius}px</span>
+                    </div>
+                  </>
+                )}
 
                 <div className="flex items-center gap-2">
                   <button 
@@ -367,6 +438,10 @@
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+                style={{ touchAction: 'none' }}
               />
             </div>
             
@@ -385,7 +460,11 @@
 
           <div className="bg-gray-800 border-t border-gray-700 p-3">
             <div className="text-gray-300 text-sm text-center">
-              <span className="font-semibold">Controls:</span> Arrow Keys or WASD to move • Left Click + Drag to pan • {gmMode ? 'GM Mode Active - Full map visible' : 'Fog of War Active'}
+              <span className="font-semibold">Controls:</span> 
+              {isTouchDevice 
+                ? ' Tap to move token • Two-finger drag to pan' 
+                : ' Arrow Keys or WASD to move • Left Click + Drag to pan'
+              } • {gmMode ? 'GM Mode Active - Full map visible' : 'Fog of War Active'}
             </div>
           </div>
         </div>
