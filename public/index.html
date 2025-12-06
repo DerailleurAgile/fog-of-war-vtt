@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fog of War VTT</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function App() {
+      const canvasRef = useRef(null);
+      const blurCanvasRef = useRef(null);
+      const wsRef = useRef(null);
+      const [mapImage, setMapImage] = useState(null);
+      const [tokenPos, setTokenPos] = useState({ x: 0.85, y: 0.85 });
+      const [revealRadius, setRevealRadius] = useState(80);
+      const [exploredAreas, setExploredAreas] = useState([]);
+      const [zoom, setZoom] = useState(1);
+      const [isPanning, setIsPanning] = useState(false);
+      const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+      const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+      const [gmMode, setGmMode] = useState(false);
+      const [connected, setConnected] = useState(false);
+      const [clientCount, setClientCount] = useState(0);
+
+      // WebSocket connection
+      useEffect(() => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          console.log('Connected to server');
+          setConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          
+          switch(data.type) {
+            case 'init':
+              if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
+              if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
+              if (data.state.mapImage) {
+                const img = new Image();
+                img.onload = () => setMapImage(img);
+                img.src = data.state.mapImage;
+              }
+              break;
+
+            case 'update':
+              setTokenPos(data.tokenPos);
+              setExploredAreas(data.exploredAreas);
+              break;
+
+            case 'map':
+              const img = new Image();
+              img.onload = () => setMapImage(img);
+              img.src = data.mapImage;
+              break;
+
+            case 'reset':
+              setExploredAreas([]);
+              setTokenPos({ x: 0.85, y: 0.85 });
+              setZoom(1);
+              setPanOffset({ x: 0, y: 0 });
+              break;
+          }
+        };
+
+        ws.onclose = () => {
+          console.log('Disconnected from server');
+          setConnected(false);
+        };
+
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+
+        return () => ws.close();
+      }, []);
+
+      const handleImageUpload = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+              setMapImage(img);
+              // Send map to all clients
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({
+                  type: 'map',
+                  mapImage: event.target.result
+                }));
+              }
+            };
+            img.src = event.target.result;
+          };
+          reader.readAsDataURL(file);
+          setExploredAreas([]);
+          setTokenPos({ x: 0.85, y: 0.85 });
+        }
+      };
+
+      // Add current position to explored areas and sync
+      useEffect(() => {
+        if (mapImage && !gmMode) {
+          const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
+          setExploredAreas(newExplored);
+          
+          // Send update to server
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: 'move',
+              tokenPos: tokenPos,
+              exploredAreas: newExplored
+            }));
+          }
+        }
+      }, [tokenPos, mapImage, revealRadius]);
+
+      // Handle keyboard movement
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          const step = 0.02;
+          setTokenPos(prev => {
+            let newPos = { ...prev };
+            
+            if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+              newPos.y = Math.max(0, prev.y - step);
+            } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+              newPos.y = Math.min(1, prev.y + step);
+            } else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+              newPos.x = Math.max(0, prev.x - step);
+            } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+              newPos.x = Math.min(1, prev.x + step);
+            } else {
+              return prev;
+            }
+            
+            return newPos;
+          });
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, []);
+
+      // Drawing logic
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        const blurCanvas = blurCanvasRef.current;
+        if (!canvas || !blurCanvas || !mapImage) return;
+
+        const ctx = canvas.getContext('2d');
+        const blurCtx = blurCanvas.getContext('2d');
+        const rect = canvas.getBoundingClientRect();
+        
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        blurCanvas.width = rect.width;
+        blurCanvas.height = rect.height;
+
+        const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
+        const scaledWidth = mapImage.width * scale;
+        const scaledHeight = mapImage.height * scale;
+        const offsetX = (canvas.width - scaledWidth) / 2 + panOffset.x;
+        const offsetY = (canvas.height - scaledHeight) / 2 + panOffset.y;
+
+        // Draw clear image on main canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
+
+        // Only draw blur layer if not in GM mode
+        if (!gmMode) {
+          // Draw blurred version on blur canvas
+          blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
+          blurCtx.fillStyle = '#2a2a2a';
+          blurCtx.fillRect(0, 0, blurCanvas.width, blurCanvas.height);
+          blurCtx.filter = 'blur(20px)';
+          blurCtx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
+          blurCtx.filter = 'none';
+
+          // Create mask by "erasing" explored areas from blur canvas
+          blurCtx.globalCompositeOperation = 'destination-out';
+          
+          exploredAreas.forEach(area => {
+            const x = offsetX + area.x * scaledWidth;
+            const y = offsetY + area.y * scaledHeight;
+            const radius = area.radius * zoom;
+            
+            const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.8)');
+            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            
+            blurCtx.fillStyle = gradient;
+            blurCtx.beginPath();
+            blurCtx.arc(x, y, radius, 0, Math.PI * 2);
+            blurCtx.fill();
+          });
+
+          blurCtx.globalCompositeOperation = 'source-over';
+        } else {
+          // In GM mode, clear the blur canvas
+          blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
+        }
+
+        // Draw party token on main canvas
+        const tokenX = offsetX + tokenPos.x * scaledWidth;
+        const tokenY = offsetY + tokenPos.y * scaledHeight;
+        
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.beginPath();
+        ctx.arc(tokenX + 2, tokenY + 2, 12, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = '#3b82f6';
+        ctx.strokeStyle = '#1e40af';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(tokenX, tokenY, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.beginPath();
+        ctx.arc(tokenX - 3, tokenY - 3, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadius, gmMode]);
+
+      const resetExploration = () => {
+        setExploredAreas([]);
+        setTokenPos({ x: 0.85, y: 0.85 });
+        setZoom(1);
+        setPanOffset({ x: 0, y: 0 });
+        
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'reset' }));
+        }
+      };
+
+      const handleMouseDown = (e) => {
+        if (e.button === 0) {
+          setIsPanning(true);
+          setPanStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
+        }
+      };
+
+      const handleMouseMove = (e) => {
+        if (isPanning) {
+          setPanOffset({
+            x: e.clientX - panStart.x,
+            y: e.clientY - panStart.y
+          });
+        }
+      };
+
+      const handleMouseUp = () => {
+        setIsPanning(false);
+      };
+
+      return (
+        <div className="w-full h-screen bg-gray-900 flex flex-col">
+          <div className="bg-gray-800 border-b border-gray-700 p-4">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-4">
+                <h1 className="text-2xl font-bold text-white">Fog of War VTT</h1>
+                <div className="flex items-center gap-2">
+                  <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                  <span className="text-sm text-gray-300">
+                    {connected ? 'Connected' : 'Disconnected'}
+                  </span>
+                </div>
+              </div>
+              
+              <div className="flex items-center gap-4 flex-wrap">
+                <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded cursor-pointer transition-colors">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <span>Upload Map</span>
+                  <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                </label>
+
+                <label className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded cursor-pointer transition-colors">
+                  <input 
+                    type="checkbox" 
+                    checked={gmMode}
+                    onChange={(e) => setGmMode(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <span>GM Mode (No Fog)</span>
+                </label>
+                
+                <div className="flex items-center gap-2">
+                  <label className="text-gray-300 text-sm">Reveal Radius:</label>
+                  <input 
+                    type="range" 
+                    min="40" 
+                    max="200" 
+                    value={revealRadius} 
+                    onChange={(e) => setRevealRadius(Number(e.target.value))}
+                    className="w-32"
+                  />
+                  <span className="text-gray-300 text-sm w-12">{revealRadius}px</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setZoom(z => Math.max(0.5, z - 0.1))}
+                    className="p-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+                    title="Zoom Out"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7" />
+                    </svg>
+                  </button>
+                  <span className="text-gray-300 text-sm w-12 text-center">{Math.round(zoom * 100)}%</span>
+                  <button 
+                    onClick={() => setZoom(z => Math.min(3, z + 0.1))}
+                    className="p-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+                    title="Zoom In"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                    </svg>
+                  </button>
+                </div>
+                
+                <button 
+                  onClick={resetExploration}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  <span>Reset</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 relative overflow-hidden">
+            <div className="relative w-full h-full">
+              <canvas 
+                ref={canvasRef} 
+                className="absolute inset-0 w-full h-full"
+              />
+              <canvas 
+                ref={blurCanvasRef} 
+                className="absolute inset-0 w-full h-full cursor-move"
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+              />
+            </div>
+            
+            {!mapImage && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center text-gray-400">
+                  <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <p className="text-xl">Upload a map to begin</p>
+                  <p className="text-sm mt-2">Use arrow keys or WASD to move the party token</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-gray-800 border-t border-gray-700 p-3">
+            <div className="text-gray-300 text-sm text-center">
+              <span className="font-semibold">Controls:</span> Arrow Keys or WASD to move • Left Click + Drag to pan • {gmMode ? 'GM Mode Active - Full map visible' : 'Fog of War Active'}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
