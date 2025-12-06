@@ -12,15 +12,19 @@ const wss = new WebSocket.Server({ server });
 let gameState = {
   tokenPos: { x: 0.85, y: 0.85 },
   exploredAreas: [],
-  mapImage: null
+  mapImage: null,
+  revealRadius: 80
 };
 
 // Serve static files
 app.use(express.static('public'));
 
 // Handle WebSocket connections
-wss.on('connection', (ws) => {
-  console.log('New client connected. Total clients:', wss.clients.size);
+wss.on('connection', (ws, req) => {
+  const rawIp = req.socket.remoteAddress;
+  const ip = rawIp.replace(/^::ffff:/, '').replace(/^::/, '');
+  console.log(`New client connected from ${ip}. Total clients: ${wss.clients.size}`);
+
 
   // Check if this is the first connection (GM)
   const isGM = wss.clients.size === 1;
@@ -45,6 +49,14 @@ wss.on('connection', (ws) => {
             type: 'update',
             tokenPos: data.tokenPos,
             exploredAreas: data.exploredAreas
+          });
+          break;
+
+        case 'radius':
+          gameState.revealRadius = data.revealRadius;
+          broadcast({
+            type: 'radius',
+            revealRadius: data.revealRadius
           });
           break;
 

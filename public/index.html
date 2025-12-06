@@ -21,7 +21,7 @@
       const wsRef = useRef(null);
       const [mapImage, setMapImage] = useState(null);
       const [tokenPos, setTokenPos] = useState({ x: 0.85, y: 0.85 });
-      const [revealRadius, setRevealRadius] = useState(80);
+      const [revealRadius, setRevealRadius] = useState(40);
       const [exploredAreas, setExploredAreas] = useState([]);
       const [zoom, setZoom] = useState(1);
       const [isPanning, setIsPanning] = useState(false);
@@ -55,6 +55,7 @@
               setIsGM(data.isGM);
               if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
               if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
+              if (data.state.revealRadius) setRevealRadius(data.state.revealRadius);
               if (data.state.mapImage) {
                 const img = new Image();
                 img.onload = () => setMapImage(img);
@@ -69,6 +70,10 @@
               setTimeout(() => {
                 isReceivingUpdate.current = false;
               }, 50);
+              break;
+
+            case 'radius':
+              setRevealRadius(data.revealRadius);
               break;
 
             case 'map':
@@ -122,22 +127,41 @@
         }
       };
 
+      const handleRadiusChange = (newRadius) => {
+        setRevealRadius(newRadius);
+        // Broadcast radius change to all clients
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'radius',
+            revealRadius: newRadius
+          }));
+        }
+      };
+
       // Add current position to explored areas and sync
       useEffect(() => {
         if (mapImage && !gmMode && !isReceivingUpdate.current) {
-          const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
-          setExploredAreas(newExplored);
+          // Only add to explored areas, don't rebuild the entire array with new radius
+          const lastArea = exploredAreas[exploredAreas.length - 1];
+          const needsNewEntry = !lastArea || 
+            lastArea.x !== tokenPos.x || 
+            lastArea.y !== tokenPos.y;
           
-          // Send update to server (but not if we just received an update)
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({
-              type: 'move',
-              tokenPos: tokenPos,
-              exploredAreas: newExplored
-            }));
+          if (needsNewEntry) {
+            const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
+            setExploredAreas(newExplored);
+            
+            // Send update to server (but not if we just received an update)
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({
+                type: 'move',
+                tokenPos: tokenPos,
+                exploredAreas: newExplored
+              }));
+            }
           }
         }
-      }, [tokenPos, mapImage, revealRadius, gmMode]);
+      }, [tokenPos, mapImage, gmMode]);
 
       // Handle keyboard movement
       useEffect(() => {
@@ -286,43 +310,87 @@
       };
 
       // Touch handlers for mobile
+      const isTouchPanning = useRef(false);
+      const touchStartTimeout = useRef(null);
+      const initialTouchCount = useRef(0);
+      
       const handleTouchStart = (e) => {
-        if (e.touches.length === 1) {
-          // Single touch - move token
-          const rect = e.target.getBoundingClientRect();
-          const touch = e.touches[0];
-          updateTokenFromTouch(touch, rect);
-        } else if (e.touches.length === 2) {
-          // Two fingers - pan
+        // Clear any pending timeout
+        if (touchStartTimeout.current) {
+          clearTimeout(touchStartTimeout.current);
+          touchStartTimeout.current = null;
+        }
+
+        initialTouchCount.current = e.touches.length;
+
+        if (e.touches.length >= 2) {
+          // Two or more fingers - immediately set panning mode
+          e.preventDefault();
+          isTouchPanning.current = true;
           setIsPanning(true);
           const touch = e.touches[0];
           setPanStart({ x: touch.clientX - panOffset.x, y: touch.clientY - panOffset.y });
+        } else if (e.touches.length === 1) {
+          // Single touch - wait a moment to see if a second finger comes down
+          const rect = e.target.getBoundingClientRect();
+          const touch = e.touches[0];
+          
+          touchStartTimeout.current = setTimeout(() => {
+            // After delay, if still only one finger, move token
+            if (initialTouchCount.current === 1 && !isTouchPanning.current) {
+              updateTokenFromTouch(touch, rect);
+            }
+            touchStartTimeout.current = null;
+          }, 100); // 100ms delay to detect multi-touch
         }
       };
 
       const handleTouchMove = (e) => {
         e.preventDefault();
-        if (e.touches.length === 1 && !isPanning) {
-          // Single touch - move token
-          const rect = e.target.getBoundingClientRect();
-          const touch = e.touches[0];
-          updateTokenFromTouch(touch, rect);
-        } else if (e.touches.length === 2 || isPanning) {
-          // Two fingers - pan
+        
+        // If we detect multiple touches during move, immediately switch to pan mode
+        if (e.touches.length >= 2) {
+          if (touchStartTimeout.current) {
+            clearTimeout(touchStartTimeout.current);
+            touchStartTimeout.current = null;
+          }
+          isTouchPanning.current = true;
+          setIsPanning(true);
+        }
+        
+        if (e.touches.length >= 2 || isTouchPanning.current) {
+          // Multi-touch or already in pan mode - just pan
           const touch = e.touches[0];
           setPanOffset({
             x: touch.clientX - panStart.x,
             y: touch.clientY - panStart.y
           });
+        } else if (e.touches.length === 1 && !isTouchPanning.current && !touchStartTimeout.current) {
+          // Single touch, not panning, and past the initial delay - move token
+          const rect = e.target.getBoundingClientRect();
+          const touch = e.touches[0];
+          updateTokenFromTouch(touch, rect);
         }
       };
 
-      const handleTouchEnd = () => {
-        setIsPanning(false);
+      const handleTouchEnd = (e) => {
+        // Clear timeout if finger lifted before delay
+        if (touchStartTimeout.current) {
+          clearTimeout(touchStartTimeout.current);
+          touchStartTimeout.current = null;
+        }
+
+        // Only reset panning when ALL fingers are lifted
+        if (e.touches.length === 0) {
+          isTouchPanning.current = false;
+          setIsPanning(false);
+          initialTouchCount.current = 0;
+        }
       };
 
       const updateTokenFromTouch = (touch, rect) => {
-        if (!mapImage || isReceivingUpdate.current) return;
+        // Don't move token if we're panning, receiving updates, or no map
+        if (!mapImage || isReceivingUpdate.current || isPanning || isTouchPanning.current) return;
         
         const canvas = canvasRef.current;
         const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
@@ -379,10 +447,10 @@
                       <label className="text-gray-300 text-sm">Reveal Radius:</label>
                       <input 
                         type="range" 
-                        min="40" 
+                        min="30" 
                         max="200" 
                         value={revealRadius} 
-                        onChange={(e) => setRevealRadius(Number(e.target.value))}
+                        onChange={(e) => handleRadiusChange(Number(e.target.value))}
                         className="w-32"
                       />
                       <span className="text-gray-300 text-sm w-12">{revealRadius}px</span>
