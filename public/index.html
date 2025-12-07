@@ -15,15 +15,57 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
+    // Configuration Constants
+    const CONFIG = {
+      TOKEN: {
+        RADIUS: 12,
+        SHADOW_OFFSET: 2,
+        HIGHLIGHT_OFFSET: 3,
+        HIGHLIGHT_RADIUS: 4,
+      },
+      CANVAS: {
+        BLUR_AMOUNT: 20,
+        BACKGROUND_COLOR: '#2a2a2a',
+        DARKNESS_OPACITY: 0.6,
+      },
+      MOVEMENT: {
+        STEP: 0.02,
+        TOUCH_DELAY_MS: 100,
+        UPDATE_DEBOUNCE_MS: 50,
+      },
+      DEFAULTS: {
+        START_POS: { x: 0.85, y: 0.85 },
+        REVEAL_RADIUS_PERCENT: 8,
+        ZOOM: 1,
+      },
+      VISION: {
+        GRADIENT_INNER_STOP: 0,
+        GRADIENT_MID_STOP: 0.75,
+        GRADIENT_OUTER_STOP: 1,
+        GRADIENT_INNER_ALPHA: 1,
+        GRADIENT_MID_ALPHA: 0.9,
+        GRADIENT_OUTER_ALPHA: 0,
+      },
+      COLORS: {
+        TOKEN_FILL: '#3b82f6',
+        TOKEN_STROKE: '#1e40af',
+        TOKEN_SHADOW: 'rgba(0, 0, 0, 0.3)',
+        TOKEN_HIGHLIGHT: 'rgba(255, 255, 255, 0.5)',
+        GM_HALO: { r: 59, g: 130, b: 246 },
+        TORCH_HALO: { r: 255, g: 255, b: 150 },
+        TORCH_HALO_OUTER: { r: 255, g: 255, b: 0 },
+      }
+    };
+
     function App() {
       const canvasRef = useRef(null);
       const blurCanvasRef = useRef(null);
       const wsRef = useRef(null);
       const [mapImage, setMapImage] = useState(null);
-      const [tokenPos, setTokenPos] = useState({ x: 0.85, y: 0.85 });
-      const [revealRadiusPercent, setRevealRadiusPercent] = useState(8);
+      const [tokenPos, setTokenPos] = useState(CONFIG.DEFAULTS.START_POS);
+      const [revealRadiusPercent, setRevealRadiusPercent] = useState(CONFIG.DEFAULTS.REVEAL_RADIUS_PERCENT);
       const [exploredAreas, setExploredAreas] = useState([]);
-      const [zoom, setZoom] = useState(1);
+      const [zoom, setZoom] = useState(CONFIG.DEFAULTS.ZOOM);
       const [isPanning, setIsPanning] = useState(false);
       const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
       const [panStart, setPanStart] = useState({ x: 0, y: 0 });
@@ -33,6 +75,117 @@
       const [isTouchDevice, setIsTouchDevice] = useState(false);
       const isReceivingUpdate = useRef(false);
       const [gmTorchlight, setGmTorchlight] = useState(false);
+
+      // Canvas Rendering Functions
+      const calculateCanvasLayout = (canvas, mapImage, zoom, panOffset) => {
+        const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
+        const scaledWidth = mapImage.width * scale;
+        const scaledHeight = mapImage.height * scale;
+        const offsetX = (canvas.width - scaledWidth) / 2 + panOffset.x;
+        const offsetY = (canvas.height - scaledHeight) / 2 + panOffset.y;
+        
+        return { scale, scaledWidth, scaledHeight, offsetX, offsetY };
+      };
+
+      const drawClearMap = (ctx, canvas, mapImage, layout) => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = CONFIG.CANVAS.BACKGROUND_COLOR;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(mapImage, layout.offsetX, layout.offsetY, layout.scaledWidth, layout.scaledHeight);
+      };
+
+      const drawVisionCircle = (ctx, x, y, radius) => {
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        gradient.addColorStop(CONFIG.VISION.GRADIENT_INNER_STOP, `rgba(255, 255, 255, ${CONFIG.VISION.GRADIENT_INNER_ALPHA})`);
+        gradient.addColorStop(CONFIG.VISION.GRADIENT_MID_STOP, `rgba(255, 255, 255, ${CONFIG.VISION.GRADIENT_MID_ALPHA})`);
+        gradient.addColorStop(CONFIG.VISION.GRADIENT_OUTER_STOP, `rgba(255, 255, 255, ${CONFIG.VISION.GRADIENT_OUTER_ALPHA})`);
+        
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      };
+
+      const drawFogOfWar = (blurCtx, canvas, mapImage, layout, exploredAreas, tokenPos, revealRadiusPercent, gmTorchlight) => {
+        blurCtx.clearRect(0, 0, canvas.width, canvas.height);
+        blurCtx.fillStyle = CONFIG.CANVAS.BACKGROUND_COLOR;
+        blurCtx.fillRect(0, 0, canvas.width, canvas.height);
+        blurCtx.filter = `blur(${CONFIG.CANVAS.BLUR_AMOUNT}px)`;
+        blurCtx.drawImage(mapImage, layout.offsetX, layout.offsetY, layout.scaledWidth, layout.scaledHeight);
+        blurCtx.filter = 'none';
+
+        // Darken if torchlight mode
+        if (gmTorchlight) {
+          blurCtx.fillStyle = `rgba(0, 0, 0, ${CONFIG.CANVAS.DARKNESS_OPACITY})`;
+          blurCtx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        blurCtx.globalCompositeOperation = 'destination-out';
+        
+        const visionRadiusInMapUnits = revealRadiusPercent / 100;
+        const radius = visionRadiusInMapUnits * layout.scaledWidth;
+        
+        if (gmTorchlight) {
+          // Torchlight mode: only reveal current position
+          const x = layout.offsetX + tokenPos.x * layout.scaledWidth;
+          const y = layout.offsetY + tokenPos.y * layout.scaledHeight;
+          drawVisionCircle(blurCtx, x, y, radius);
+        } else {
+          // Normal mode: reveal all explored areas
+          exploredAreas.forEach(area => {
+            const x = layout.offsetX + area.x * layout.scaledWidth;
+            const y = layout.offsetY + area.y * layout.scaledHeight;
+            drawVisionCircle(blurCtx, x, y, radius);
+          });
+        }
+
+        blurCtx.globalCompositeOperation = 'source-over';
+      };
+
+      const drawToken = (ctx, tokenPos, layout, revealRadiusPercent, gmMode, gmTorchlight) => {
+        const tokenX = layout.offsetX + tokenPos.x * layout.scaledWidth;
+        const tokenY = layout.offsetY + tokenPos.y * layout.scaledHeight;
+        
+        // Shadow
+        ctx.fillStyle = CONFIG.COLORS.TOKEN_SHADOW;
+        ctx.beginPath();
+        ctx.arc(tokenX + CONFIG.TOKEN.SHADOW_OFFSET, tokenY + CONFIG.TOKEN.SHADOW_OFFSET, CONFIG.TOKEN.RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Token body
+        ctx.fillStyle = CONFIG.COLORS.TOKEN_FILL;
+        ctx.strokeStyle = CONFIG.COLORS.TOKEN_STROKE;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(tokenX, tokenY, CONFIG.TOKEN.RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        // Highlight
+        ctx.fillStyle = CONFIG.COLORS.TOKEN_HIGHLIGHT;
+        ctx.beginPath();
+        ctx.arc(tokenX - CONFIG.TOKEN.HIGHLIGHT_OFFSET, tokenY - CONFIG.TOKEN.HIGHLIGHT_OFFSET, CONFIG.TOKEN.HIGHLIGHT_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Halo
+        if (gmMode || gmTorchlight) {
+          const haloRadius = (revealRadiusPercent / 100) * layout.scaledWidth;
+          const gradient = ctx.createRadialGradient(tokenX, tokenY, 0, tokenX, tokenY, haloRadius);
+          
+          if (gmTorchlight) {
+            gradient.addColorStop(0, `rgba(${CONFIG.COLORS.TORCH_HALO.r}, ${CONFIG.COLORS.TORCH_HALO.g}, ${CONFIG.COLORS.TORCH_HALO.b}, 0.75)`);
+            gradient.addColorStop(1, `rgba(${CONFIG.COLORS.TORCH_HALO_OUTER.r}, ${CONFIG.COLORS.TORCH_HALO_OUTER.g}, ${CONFIG.COLORS.TORCH_HALO_OUTER.b}, 0.25)`);
+          } else if (gmMode) {
+            gradient.addColorStop(0, `rgba(${CONFIG.COLORS.GM_HALO.r}, ${CONFIG.COLORS.GM_HALO.g}, ${CONFIG.COLORS.GM_HALO.b}, 0.75)`);
+            gradient.addColorStop(1, `rgba(${CONFIG.COLORS.GM_HALO.r}, ${CONFIG.COLORS.GM_HALO.g}, ${CONFIG.COLORS.GM_HALO.b}, 0.25)`);
+          }
+
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(tokenX, tokenY, haloRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      };
 
       // WebSocket connection
       useEffect(() => {
@@ -74,7 +227,7 @@
               setExploredAreas(data.exploredAreas);
               setTimeout(() => {
                 isReceivingUpdate.current = false;
-              }, 50);
+              }, CONFIG.MOVEMENT.UPDATE_DEBOUNCE_MS);
               break;
 
             case 'radius':
@@ -97,8 +250,8 @@
 
             case 'reset':
               setExploredAreas([]);
-              setTokenPos({ x: 0.85, y: 0.85 });
-              setZoom(1);
+              setTokenPos(CONFIG.DEFAULTS.START_POS);
+              setZoom(CONFIG.DEFAULTS.ZOOM);
               setPanOffset({ x: 0, y: 0 });
               break;
           }
@@ -135,7 +288,7 @@
           };
           reader.readAsDataURL(file);
           setExploredAreas([]);
-          setTokenPos({ x: 0.85, y: 0.85 });
+          setTokenPos(CONFIG.DEFAULTS.START_POS);
         }
       };
 
@@ -156,7 +309,7 @@
 
           setTimeout(() => {
             isReceivingUpdate.current = false;
-          }, 50);
+          }, CONFIG.MOVEMENT.UPDATE_DEBOUNCE_MS);
         }
       };
 
@@ -198,7 +351,7 @@
         const handleKeyDown = (e) => {
           if (isReceivingUpdate.current) return;
           
-          const step = 0.02;
+          const step = CONFIG.MOVEMENT.STEP;
           setTokenPos(prev => {
             let newPos = { ...prev };
             
@@ -254,6 +407,12 @@
           blurCtx.filter = 'blur(20px)';
           blurCtx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
           blurCtx.filter = 'none';
+
+          // Darken the blurred map if torchlight is enabled (simulating darkness)
+          if (gmTorchlight) {
+            blurCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            blurCtx.fillRect(0, 0, blurCanvas.width, blurCanvas.height);
+          }
 
           blurCtx.globalCompositeOperation = 'destination-out';
           
@@ -340,8 +499,8 @@
 
       const resetExploration = () => {
         setExploredAreas([]);
-        setTokenPos({ x: 0.85, y: 0.85 });
-        setZoom(1);
+        setTokenPos(CONFIG.DEFAULTS.START_POS);
+        setZoom(CONFIG.DEFAULTS.ZOOM);
         setPanOffset({ x: 0, y: 0 });
         
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -396,7 +555,7 @@
               updateTokenFromTouch(touch, rect);
             }
             touchStartTimeout.current = null;
-          }, 100);
+          }, CONFIG.MOVEMENT.TOUCH_DELAY_MS);
         }
       };
 
