@@ -279,6 +279,38 @@
         setZoom(isGM ? 1 : 3);      // GM = normal, player = 300%
       }, [connected, isGM]);
 
+      // After zoom is applied and map is loaded, center viewport on token (players only)
+      useEffect(() => {
+        if (!connected) return;
+        if (isGM) return;            // GM controls their own view
+        if (!mapImage) return;
+        if (zoom !== 3) return;      // Only fire when initial 300% zoom is active
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext("2d");
+
+        // Force one layout computation so we know scaled sizes
+        const layout = calculateCanvasLayout(canvas, mapImage, zoom, { x: 0, y: 0 });
+
+        // Compute pixel position of token
+        const tokenX = layout.offsetX + tokenPos.x * layout.scaledWidth;
+        const tokenY = layout.offsetY + tokenPos.y * layout.scaledHeight;
+
+        // Target center of screen
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+
+        // Pan offset needed to bring token to center
+        const newPan = {
+          x: centerX - tokenX,
+          y: centerY - tokenY,
+        };
+
+        setPanOffset(newPan);
+      }, [connected, isGM, mapImage, zoom]);
+
 
       const handleImageUpload = (e) => {
         const file = e.target.files[0];
