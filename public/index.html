@@ -273,6 +273,13 @@
         return () => ws.close();
       }, []);
 
+      // Set player default zoom (GM keeps 1x, players start at 3x)
+      useEffect(() => {
+        if (!connected) return;     // Don't fire before the socket handshake
+        setZoom(isGM ? 1 : 3);      // GM = normal, player = 300%
+      }, [connected, isGM]);
+
+
       const handleImageUpload = (e) => {
         const file = e.target.files[0];
         if (file) {
