@@ -78,6 +78,7 @@
 
       const isDraggingToken = useRef(false);
       const dragStartOffset = useRef({ x: 0, y: 0 });
+      const [isDragging, setIsDragging] = useState(false);
 
       // Canvas Rendering Functions
       const calculateCanvasLayout = (canvas, mapImage, zoom, panOffset) => {
@@ -379,126 +380,79 @@
       }, []);
 
       useEffect(() => {
+        if (!mapImage) return;
+
         const canvas = canvasRef.current;
         const blurCanvas = blurCanvasRef.current;
-        if (!canvas || !blurCanvas || !mapImage) return;
+        if (!canvas || !blurCanvas) return;
 
         const ctx = canvas.getContext('2d');
         const blurCtx = blurCanvas.getContext('2d');
         const rect = canvas.getBoundingClientRect();
-        
+
+        // Match canvas size
         canvas.width = rect.width;
         canvas.height = rect.height;
         blurCanvas.width = rect.width;
         blurCanvas.height = rect.height;
 
-        const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
-        const scaledWidth = mapImage.width * scale;
-        const scaledHeight = mapImage.height * scale;
-        const offsetX = (canvas.width - scaledWidth) / 2 + panOffset.x;
-        const offsetY = (canvas.height - scaledHeight) / 2 + panOffset.y;
+        const layout = calculateCanvasLayout(canvas, mapImage, zoom, panOffset);
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#2a2a2a';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
+        // --- Draw main map ---
+        drawClearMap(ctx, canvas, mapImage, layout);
 
+        // --- Draw Fog of War / Blur for player view ---
         if (!gmMode) {
           blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
-          blurCtx.fillStyle = '#2a2a2a';
+          blurCtx.fillStyle = CONFIG.CANVAS.BACKGROUND_COLOR;
           blurCtx.fillRect(0, 0, blurCanvas.width, blurCanvas.height);
-          blurCtx.filter = 'blur(20px)';
-          blurCtx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
+
+          // Apply blur to map
+          blurCtx.filter = `blur(${CONFIG.CANVAS.BLUR_AMOUNT}px)`;
+          blurCtx.drawImage(mapImage, layout.offsetX, layout.offsetY, layout.scaledWidth, layout.scaledHeight);
           blurCtx.filter = 'none';
 
-          // Darken the blurred map if torchlight is enabled (simulating darkness)
+          // Apply darkness overlay if torchlight
           if (gmTorchlight) {
-            blurCtx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+            blurCtx.fillStyle = `rgba(0, 0, 0, ${CONFIG.CANVAS.DARKNESS_OPACITY})`;
             blurCtx.fillRect(0, 0, blurCanvas.width, blurCanvas.height);
           }
 
           blurCtx.globalCompositeOperation = 'destination-out';
-          
-          const visionRadiusInMapUnits = revealRadiusPercent / 100;
-          
+
+          const visionRadius = (revealRadiusPercent / 100) * layout.scaledWidth;
+
           if (gmTorchlight) {
-            // Torchlight mode: only reveal current position
-            const x = offsetX + tokenPos.x * scaledWidth;
-            const y = offsetY + tokenPos.y * scaledHeight;
-            const radius = visionRadiusInMapUnits * scaledWidth;
-
-            const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
-            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-            gradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.9)');
-            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-            blurCtx.fillStyle = gradient;
-            blurCtx.beginPath();
-            blurCtx.arc(x, y, radius, 0, Math.PI * 2);
-            blurCtx.fill();
+            // Torch mode: reveal only current token
+            const x = layout.offsetX + tokenPos.x * layout.scaledWidth;
+            const y = layout.offsetY + tokenPos.y * layout.scaledHeight;
+            drawVisionCircle(blurCtx, x, y, visionRadius);
           } else {
-            // Normal mode: reveal all explored areas
-            exploredAreas.forEach(area => {
-              const x = offsetX + area.x * scaledWidth;
-              const y = offsetY + area.y * scaledHeight;
-              const radius = visionRadiusInMapUnits * scaledWidth;
-
-              const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
-              gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-              gradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.9)');
-              gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-              blurCtx.fillStyle = gradient;
-              blurCtx.beginPath();
-              blurCtx.arc(x, y, radius, 0, Math.PI * 2);
-              blurCtx.fill();
-            });
+            // Normal player view: blur entire map except last token drop
+            if (isDragging) {
+              // While dragging: hide everything (full blur)
+              // Do nothing here
+            } else {
+              // Reveal last token drop
+              const last = exploredAreas[exploredAreas.length - 1];
+              if (last) {
+                const x = layout.offsetX + last.x * layout.scaledWidth;
+                const y = layout.offsetY + last.y * layout.scaledHeight;
+                drawVisionCircle(blurCtx, x, y, visionRadius);
+              }
+            }
           }
 
           blurCtx.globalCompositeOperation = 'source-over';
         } else {
+          // GM mode: no blur
           blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
         }
 
-        const tokenX = offsetX + tokenPos.x * scaledWidth;
-        const tokenY = offsetY + tokenPos.y * scaledHeight;
-        
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-        ctx.beginPath();
-        ctx.arc(tokenX + 2, tokenY + 2, 12, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.fillStyle = '#3b82f6';
-        ctx.strokeStyle = '#1e40af';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(tokenX, tokenY, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-        ctx.beginPath();
-        ctx.arc(tokenX - 3, tokenY - 3, 4, 0, Math.PI * 2);
-        ctx.fill();
+        // --- Draw token on main canvas ---
+        drawToken(ctx, tokenPos, layout, revealRadiusPercent, gmMode, gmTorchlight);
 
-        if (gmMode || gmTorchlight) {
-          const haloRadius = (revealRadiusPercent / 100) * scaledWidth;
-          const gradient = ctx.createRadialGradient(tokenX, tokenY, 0, tokenX, tokenY, haloRadius);
-          
-          if (gmTorchlight) {
-            gradient.addColorStop(0, 'rgba(255, 255, 150, 0.75)');
-            gradient.addColorStop(1, 'rgba(255, 255, 0, 0.25)');
-          } else if (gmMode) {
-            gradient.addColorStop(0, 'rgba(59, 130, 246, 0.75)');
-            gradient.addColorStop(1, 'rgba(59, 130, 246, 0.25)');
-          }
-
-          ctx.fillStyle = gradient;
-          ctx.beginPath();
-          ctx.arc(tokenX, tokenY, haloRadius, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode, gmTorchlight]);
+      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode, gmTorchlight, isDragging]);
 
       const resetExploration = () => {
         setExploredAreas([]);
@@ -534,10 +488,9 @@
 
       // Mouse down on blurCanvas (or main canvas if you prefer)
       const handleTokenMouseDown = (e) => {
-        if (!isGM) return; // Only GM can drag the token
+         if (!isGM) return;
         const canvas = canvasRef.current;
         const rect = canvas.getBoundingClientRect();
-        
         const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
         const offsetX = (canvas.width - mapImage.width * scale) / 2 + panOffset.x;
         const offsetY = (canvas.height - mapImage.height * scale) / 2 + panOffset.y;
@@ -547,6 +500,7 @@
         const dist = Math.hypot(e.clientX - rect.left - tokenX, e.clientY - rect.top - tokenY);
         if (dist <= CONFIG.TOKEN.RADIUS * 1.5) {
           isDraggingToken.current = true;
+          setIsDragging(true); // << start full-map blur
           dragStartOffset.current = {
             x: tokenX - (e.clientX - rect.left),
             y: tokenY - (e.clientY - rect.top)
@@ -556,7 +510,13 @@
       };
 
       const handleTokenMouseMove = (e) => {
+        updateDraggingToken(e);
+      };
+
+      // Update token position while dragging
+      const updateDraggingToken = (e) => {
         if (!isDraggingToken.current) return;
+
         const canvas = canvasRef.current;
         const rect = canvas.getBoundingClientRect();
         const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
@@ -567,21 +527,56 @@
         const y = (e.clientY - rect.top + dragStartOffset.current.y - offsetY) / (mapImage.height * scale);
 
         const newPos = { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
-        setTokenPos(newPos);
 
-        // Broadcast to all clients
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: 'move',
-            tokenPos: newPos,
-            exploredAreas: [...exploredAreas, newPos] // optional
-          }));
+        if(isGM) {
+          setTokenPos(newPos);
         }
+
+        // Update explored areas
+        // setExploredAreas(prev => {
+        //   // Only add if position is new (avoid duplicates)
+        //   const last = prev[prev.length - 1];
+        //   if (!last || last.x !== newPos.x || last.y !== newPos.y) {
+        //     const updated = gmTorchlight ? [newPos] : [...prev, newPos];
+
+        //     // Send WS update
+        //     if (wsRef.current?.readyState === WebSocket.OPEN) {
+        //       wsRef.current.send(JSON.stringify({
+        //         type: 'move',
+        //         tokenPos: newPos,
+        //         exploredAreas: updated
+        //       }));
+        //     }
+
+        //     return updated;
+        //   }
+        //   return prev;
+        // });
       };
+
 
       const handleTokenMouseUp = () => {
-        isDraggingToken.current = false;
-      };
+        if (isDraggingToken.current) {
+            isDraggingToken.current = false;
+            setIsDragging(false);
+
+            // Now commit the position to exploredAreas and notify players
+            setExploredAreas(prev => {
+                const updated = [...prev, tokenPos];
+
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                        type: 'move',
+                        tokenPos,
+                        exploredAreas: updated
+                    }));
+                }
+
+                return updated;
+            });
+        }
+    };
+
 
       const isTouchPanning = useRef(false);
       const touchStartTimeout = useRef(null);
