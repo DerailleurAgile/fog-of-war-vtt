@@ -21,8 +21,7 @@
       const wsRef = useRef(null);
       const [mapImage, setMapImage] = useState(null);
       const [tokenPos, setTokenPos] = useState({ x: 0.85, y: 0.85 });
-      // const [revealRadius, setRevealRadius] = useState(40);
-      const [revealRadiusPercent, setRevealRadiusPercent] = useState(8); // 8% of map width
+      const [revealRadiusPercent, setRevealRadiusPercent] = useState(8);
       const [exploredAreas, setExploredAreas] = useState([]);
       const [zoom, setZoom] = useState(1);
       const [isPanning, setIsPanning] = useState(false);
@@ -33,10 +32,10 @@
       const [isGM, setIsGM] = useState(false);
       const [isTouchDevice, setIsTouchDevice] = useState(false);
       const isReceivingUpdate = useRef(false);
+      const [gmTorchlight, setGmTorchlight] = useState(false);
 
       // WebSocket connection
       useEffect(() => {
-        // Detect touch device
         setIsTouchDevice('ontouchstart' in window || navigator.maxTouchPoints > 0);
         
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -54,9 +53,14 @@
           switch(data.type) {
             case 'init':
               setIsGM(data.isGM);
+              if (data.state.gmTorchlight !== undefined) {
+                setGmTorchlight(data.state.gmTorchlight);
+              }
               if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
               if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
-              // if (data.state.revealRadius) setRevealRadius(data.state.revealRadius);
+              if (data.state.revealRadiusPercent !== undefined) {
+                setRevealRadiusPercent(data.state.revealRadiusPercent);
+              }
               if (data.state.mapImage) {
                 const img = new Image();
                 img.onload = () => setMapImage(img);
@@ -74,15 +78,15 @@
               break;
 
             case 'radius':
-              // ignore radius messages that originated from *this* client
               if (isReceivingUpdate.current) break;
-
-              {
-                const incoming = Number(data.revealRadiusPercent);
-                if (!isNaN(incoming) && isFinite(incoming)) {
-                  setRevealRadiusPercent(incoming);
-                }
+              const incoming = Number(data.revealRadiusPercent);
+              if (!isNaN(incoming) && isFinite(incoming)) {
+                setRevealRadiusPercent(incoming);
               }
+              break;
+
+            case 'torchToggle':
+              setGmTorchlight(Boolean(data.torchEnabled));
               break;
 
             case 'map':
@@ -120,7 +124,6 @@
             const img = new Image();
             img.onload = () => {
               setMapImage(img);
-              // Send map to all clients
               if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({
                   type: 'map',
@@ -140,8 +143,6 @@
         const pct = Number(val);
         if (!isNaN(pct)) {
           setRevealRadiusPercent(pct);
-
-          // mark outgoing update
           isReceivingUpdate.current = true;
 
           if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -153,31 +154,35 @@
             );
           }
 
-          // clear the flag shortly after
           setTimeout(() => {
             isReceivingUpdate.current = false;
           }, 50);
         }
       };
 
+      const handleTorchToggle = (checked) => {
+        setGmTorchlight(checked);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "torchToggle",
+              torchEnabled: checked
+            })
+          );
+        }
+      };
 
-
-
-      // Add current position to explored areas and sync
       useEffect(() => {
         if (mapImage && !gmMode && !isReceivingUpdate.current) {
-          // Only add to explored areas, don't rebuild the entire array with new radius
           const lastArea = exploredAreas[exploredAreas.length - 1];
           const needsNewEntry = !lastArea || 
             lastArea.x !== tokenPos.x || 
             lastArea.y !== tokenPos.y;
           
           if (needsNewEntry) {
-            // const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
-            const newExplored = [...exploredAreas, tokenPos]; // just {x, y} — no radius!
+            const newExplored = [...exploredAreas, tokenPos];
             setExploredAreas(newExplored);
             
-            // Send update to server (but not if we just received an update)
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({
                 type: 'move',
@@ -189,7 +194,6 @@
         }
       }, [tokenPos, mapImage, gmMode]);
 
-      // Handle keyboard movement
       useEffect(() => {
         const handleKeyDown = (e) => {
           if (isReceivingUpdate.current) return;
@@ -218,7 +222,6 @@
         return () => window.removeEventListener('keydown', handleKeyDown);
       }, []);
 
-      // Drawing logic
       useEffect(() => {
         const canvas = canvasRef.current;
         const blurCanvas = blurCanvasRef.current;
@@ -239,15 +242,12 @@
         const offsetX = (canvas.width - scaledWidth) / 2 + panOffset.x;
         const offsetY = (canvas.height - scaledHeight) / 2 + panOffset.y;
 
-        // Draw clear image on main canvas
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#2a2a2a';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
 
-        // Only draw blur layer if not in GM mode
         if (!gmMode) {
-          // Draw blurred version on blur canvas
           blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
           blurCtx.fillStyle = '#2a2a2a';
           blurCtx.fillRect(0, 0, blurCanvas.width, blurCanvas.height);
@@ -255,18 +255,13 @@
           blurCtx.drawImage(mapImage, offsetX, offsetY, scaledWidth, scaledHeight);
           blurCtx.filter = 'none';
 
-          // Create mask by "erasing" explored areas from blur canvas
           blurCtx.globalCompositeOperation = 'destination-out';
           
-          // New explored areas reveal by percentages of map width
-          const visionRadiusInMapUnits = revealRadiusPercent / 100;  // e.g. 0.08
+          const visionRadiusInMapUnits = revealRadiusPercent / 100;
           exploredAreas.forEach(area => {
             const x = offsetX + area.x * scaledWidth;
             const y = offsetY + area.y * scaledHeight;
-            
-            // This is the key: radius based on map width, not screen pixels
             const radius = visionRadiusInMapUnits * scaledWidth;
-            // const radius = (revealRadiusPercent / 100) * scaledWidth;
 
             const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
             gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
@@ -281,11 +276,9 @@
 
           blurCtx.globalCompositeOperation = 'source-over';
         } else {
-          // In GM mode, clear the blur canvas
           blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
         }
 
-        // Draw party token on main canvas
         const tokenX = offsetX + tokenPos.x * scaledWidth;
         const tokenY = offsetY + tokenPos.y * scaledHeight;
         
@@ -307,20 +300,24 @@
         ctx.arc(tokenX - 3, tokenY - 3, 4, 0, Math.PI * 2);
         ctx.fill();
 
-        // GM-only halo
-        if (gmMode) {
+        if (gmMode || gmTorchlight) {
           const haloRadius = (revealRadiusPercent / 100) * scaledWidth;
           const gradient = ctx.createRadialGradient(tokenX, tokenY, 0, tokenX, tokenY, haloRadius);
-          gradient.addColorStop(0, 'rgba(59, 130, 246, 0.75)'); // semi-transparent blue
-          gradient.addColorStop(1, 'rgba(59, 130, 246, 0.25)');
           
+          if (gmTorchlight) {
+            gradient.addColorStop(0, 'rgba(255, 255, 150, 0.75)');
+            gradient.addColorStop(1, 'rgba(255, 255, 0, 0.25)');
+          } else if (gmMode) {
+            gradient.addColorStop(0, 'rgba(59, 130, 246, 0.75)');
+            gradient.addColorStop(1, 'rgba(59, 130, 246, 0.25)');
+          }
+
           ctx.fillStyle = gradient;
           ctx.beginPath();
           ctx.arc(tokenX, tokenY, haloRadius, 0, Math.PI * 2);
           ctx.fill();
         }
-
-      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode]);
+      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode, gmTorchlight]);
 
       const resetExploration = () => {
         setExploredAreas([]);
@@ -353,13 +350,11 @@
         setIsPanning(false);
       };
 
-      // Touch handlers for mobile
       const isTouchPanning = useRef(false);
       const touchStartTimeout = useRef(null);
       const initialTouchCount = useRef(0);
       
       const handleTouchStart = (e) => {
-        // Clear any pending timeout
         if (touchStartTimeout.current) {
           clearTimeout(touchStartTimeout.current);
           touchStartTimeout.current = null;
@@ -368,31 +363,27 @@
         initialTouchCount.current = e.touches.length;
 
         if (e.touches.length >= 2) {
-          // Two or more fingers - immediately set panning mode
           e.preventDefault();
           isTouchPanning.current = true;
           setIsPanning(true);
           const touch = e.touches[0];
           setPanStart({ x: touch.clientX - panOffset.x, y: touch.clientY - panOffset.y });
         } else if (e.touches.length === 1) {
-          // Single touch - wait a moment to see if a second finger comes down
           const rect = e.target.getBoundingClientRect();
           const touch = e.touches[0];
           
           touchStartTimeout.current = setTimeout(() => {
-            // After delay, if still only one finger, move token
             if (initialTouchCount.current === 1 && !isTouchPanning.current) {
               updateTokenFromTouch(touch, rect);
             }
             touchStartTimeout.current = null;
-          }, 100); // 100ms delay to detect multi-touch
+          }, 100);
         }
       };
 
       const handleTouchMove = (e) => {
         e.preventDefault();
         
-        // If we detect multiple touches during move, immediately switch to pan mode
         if (e.touches.length >= 2) {
           if (touchStartTimeout.current) {
             clearTimeout(touchStartTimeout.current);
@@ -403,14 +394,12 @@
         }
         
         if (e.touches.length >= 2 || isTouchPanning.current) {
-          // Multi-touch or already in pan mode - just pan
           const touch = e.touches[0];
           setPanOffset({
             x: touch.clientX - panStart.x,
             y: touch.clientY - panStart.y
           });
         } else if (e.touches.length === 1 && !isTouchPanning.current && !touchStartTimeout.current) {
-          // Single touch, not panning, and past the initial delay - move token
           const rect = e.target.getBoundingClientRect();
           const touch = e.touches[0];
           updateTokenFromTouch(touch, rect);
@@ -418,13 +407,11 @@
       };
 
       const handleTouchEnd = (e) => {
-        // Clear timeout if finger lifted before delay
         if (touchStartTimeout.current) {
           clearTimeout(touchStartTimeout.current);
           touchStartTimeout.current = null;
         }
 
-        // Only reset panning when ALL fingers are lifted
         if (e.touches.length === 0) {
           isTouchPanning.current = false;
           setIsPanning(false);
@@ -433,7 +420,6 @@
       };
 
       const updateTokenFromTouch = (touch, rect) => {
-        // Don't move token if we're panning, receiving updates, or no map
         if (!mapImage || isReceivingUpdate.current || isPanning || isTouchPanning.current) return;
         
         const canvas = canvasRef.current;
@@ -467,7 +453,6 @@
               </div>
               
               <div className="flex items-center gap-4 flex-wrap">
-
                 {isGM && (
                   <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded cursor-pointer transition-colors">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -500,8 +485,18 @@
                         onChange={(e) => handleRadiusChange(Number(e.target.value))}
                         className="w-32"
                       />
-                      <span className="text-gray-300 text-sm min-w-[4-em] tabular-nums">{revealRadiusPercent}%</span>
+                      <span className="text-gray-300 text-sm min-w-[3rem] text-right">{revealRadiusPercent}%</span>
                     </div>
+
+                    <label className="flex items-center gap-2 px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded cursor-pointer transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={gmTorchlight}
+                        onChange={(e) => handleTorchToggle(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <span>Show Torchlight Halo</span>
+                    </label>
                   </>
                 )}
 

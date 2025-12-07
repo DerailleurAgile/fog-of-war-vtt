@@ -13,22 +13,23 @@ let gameState = {
   tokenPos: { x: 0.85, y: 0.85 },
   exploredAreas: [],
   mapImage: null,
-  revealRadius: 80
+  revealRadiusPercent: 8,
+  gmTorchlight: false
 };
 
 // Serve static files
 app.use(express.static('public'));
 
 // Handle WebSocket connections
+let gmClient = null;
 wss.on('connection', (ws, req) => {
+
+  if (!gmClient) gmClient = ws;
+  const isGM = ws === gmClient;
   const rawIp = req.socket.remoteAddress;
   const ip = rawIp.replace(/^::ffff:/, '').replace(/^::/, '');
   console.log(`New client connected from ${ip}. Total clients: ${wss.clients.size}`);
 
-
-  // Check if this is the first connection (GM)
-  const isGM = wss.clients.size === 1;
-  
   // Send current game state to new client
   ws.send(JSON.stringify({
     type: 'init',
@@ -54,11 +55,19 @@ wss.on('connection', (ws, req) => {
 
         case 'radius':
           // Match the property name the client sends
-          gameState.revealRadius = data.revealRadiusPercent;
+          gameState.revealRadiusPercent = data.revealRadiusPercent;
 
           broadcast({
             type: 'radius',
             revealRadiusPercent: data.revealRadiusPercent
+          });
+          break;
+        
+        case 'torchToggle':
+          gameState.gmTorchlight = data.torchEnabled;
+          broadcast({
+            type: 'torchToggle',
+            torchEnabled: data.torchEnabled
           });
           break;
 
