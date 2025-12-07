@@ -26,7 +26,7 @@
       CANVAS: {
         BLUR_AMOUNT: 20,
         BACKGROUND_COLOR: '#2a2a2a',
-        DARKNESS_OPACITY: 0.75,
+        DARKNESS_OPACITY: 0.90,
       },
       MOVEMENT: {
         STEP: 0.02,
@@ -740,7 +740,7 @@
                   </button>
                   <span className="text-gray-300 text-sm w-12 text-center">{Math.round(zoom * 100)}%</span>
                   <button 
-                    onClick={() => setZoom(z => Math.min(3, z + 0.1))}
+                    onClick={() => setZoom(z => Math.min(4, z + 0.1))}
                     className="p-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
                     title="Zoom In"
                   >
