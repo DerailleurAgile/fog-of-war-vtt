@@ -26,7 +26,7 @@
       CANVAS: {
         BLUR_AMOUNT: 20,
         BACKGROUND_COLOR: '#2a2a2a',
-        DARKNESS_OPACITY: 0.6,
+        DARKNESS_OPACITY: 0.75,
       },
       MOVEMENT: {
         STEP: 0.02,
@@ -75,6 +75,9 @@
       const [isTouchDevice, setIsTouchDevice] = useState(false);
       const isReceivingUpdate = useRef(false);
       const [gmTorchlight, setGmTorchlight] = useState(false);
+
+      const isDraggingToken = useRef(false);
+      const dragStartOffset = useRef({ x: 0, y: 0 });
 
       // Canvas Rendering Functions
       const calculateCanvasLayout = (canvas, mapImage, zoom, panOffset) => {
@@ -410,7 +413,7 @@
 
           // Darken the blurred map if torchlight is enabled (simulating darkness)
           if (gmTorchlight) {
-            blurCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            blurCtx.fillStyle = 'rgba(0, 0, 0, 0.75)';
             blurCtx.fillRect(0, 0, blurCanvas.width, blurCanvas.height);
           }
 
@@ -516,6 +519,7 @@
       };
 
       const handleMouseMove = (e) => {
+        if(isDraggingToken.current) return;
         if (isPanning) {
           setPanOffset({
             x: e.clientX - panStart.x,
@@ -526,6 +530,57 @@
 
       const handleMouseUp = () => {
         setIsPanning(false);
+      };
+
+      // Mouse down on blurCanvas (or main canvas if you prefer)
+      const handleTokenMouseDown = (e) => {
+        if (!isGM) return; // Only GM can drag the token
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        
+        const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
+        const offsetX = (canvas.width - mapImage.width * scale) / 2 + panOffset.x;
+        const offsetY = (canvas.height - mapImage.height * scale) / 2 + panOffset.y;
+        const tokenX = offsetX + tokenPos.x * mapImage.width * scale;
+        const tokenY = offsetY + tokenPos.y * mapImage.height * scale;
+
+        const dist = Math.hypot(e.clientX - rect.left - tokenX, e.clientY - rect.top - tokenY);
+        if (dist <= CONFIG.TOKEN.RADIUS * 1.5) {
+          isDraggingToken.current = true;
+          dragStartOffset.current = {
+            x: tokenX - (e.clientX - rect.left),
+            y: tokenY - (e.clientY - rect.top)
+          };
+          e.preventDefault();
+        }
+      };
+
+      const handleTokenMouseMove = (e) => {
+        if (!isDraggingToken.current) return;
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const scale = Math.min(canvas.width / mapImage.width, canvas.height / mapImage.height) * zoom;
+        const offsetX = (canvas.width - mapImage.width * scale) / 2 + panOffset.x;
+        const offsetY = (canvas.height - mapImage.height * scale) / 2 + panOffset.y;
+
+        const x = (e.clientX - rect.left + dragStartOffset.current.x - offsetX) / (mapImage.width * scale);
+        const y = (e.clientY - rect.top + dragStartOffset.current.y - offsetY) / (mapImage.height * scale);
+
+        const newPos = { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+        setTokenPos(newPos);
+
+        // Broadcast to all clients
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'move',
+            tokenPos: newPos,
+            exploredAreas: [...exploredAreas, newPos] // optional
+          }));
+        }
+      };
+
+      const handleTokenMouseUp = () => {
+        isDraggingToken.current = false;
       };
 
       const isTouchPanning = useRef(false);
@@ -720,12 +775,12 @@
                 className="absolute inset-0 w-full h-full"
               />
               <canvas 
-                ref={blurCanvasRef} 
+                ref={blurCanvasRef}
                 className="absolute inset-0 w-full h-full cursor-move"
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
+                onMouseDown={(e) => { handleMouseDown(e); handleTokenMouseDown(e); }}
+                onMouseMove={(e) => { handleMouseMove(e); handleTokenMouseMove(e); }}
+                onMouseUp={(e) => { handleMouseUp(e); handleTokenMouseUp(e); }}
+                onMouseLeave={(e) => { handleMouseUp(e); handleTokenMouseUp(e); }}
                 onTouchStart={handleTouchStart}
                 onTouchMove={handleTouchMove}
                 onTouchEnd={handleTouchEnd}
