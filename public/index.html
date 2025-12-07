@@ -21,7 +21,8 @@
       const wsRef = useRef(null);
       const [mapImage, setMapImage] = useState(null);
       const [tokenPos, setTokenPos] = useState({ x: 0.85, y: 0.85 });
-      const [revealRadius, setRevealRadius] = useState(40);
+      // const [revealRadius, setRevealRadius] = useState(40);
+      const [revealRadiusPercent, setRevealRadiusPercent] = useState(8); // 8% of map width
       const [exploredAreas, setExploredAreas] = useState([]);
       const [zoom, setZoom] = useState(1);
       const [isPanning, setIsPanning] = useState(false);
@@ -55,7 +56,7 @@
               setIsGM(data.isGM);
               if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
               if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
-              if (data.state.revealRadius) setRevealRadius(data.state.revealRadius);
+              // if (data.state.revealRadius) setRevealRadius(data.state.revealRadius);
               if (data.state.mapImage) {
                 const img = new Image();
                 img.onload = () => setMapImage(img);
@@ -73,7 +74,15 @@
               break;
 
             case 'radius':
-              setRevealRadius(data.revealRadius);
+              // ignore radius messages that originated from *this* client
+              if (isReceivingUpdate.current) break;
+
+              {
+                const incoming = Number(data.revealRadiusPercent);
+                if (!isNaN(incoming) && isFinite(incoming)) {
+                  setRevealRadiusPercent(incoming);
+                }
+              }
               break;
 
             case 'map':
@@ -127,16 +136,32 @@
         }
       };
 
-      const handleRadiusChange = (newRadius) => {
-        setRevealRadius(newRadius);
-        // Broadcast radius change to all clients
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: 'radius',
-            revealRadius: newRadius
-          }));
+      const handleRadiusChange = (val) => {
+        const pct = Number(val);
+        if (!isNaN(pct)) {
+          setRevealRadiusPercent(pct);
+
+          // mark outgoing update
+          isReceivingUpdate.current = true;
+
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'radius',
+                revealRadiusPercent: pct
+              })
+            );
+          }
+
+          // clear the flag shortly after
+          setTimeout(() => {
+            isReceivingUpdate.current = false;
+          }, 50);
         }
       };
+
+
+
 
       // Add current position to explored areas and sync
       useEffect(() => {
@@ -148,7 +173,8 @@
             lastArea.y !== tokenPos.y;
           
           if (needsNewEntry) {
-            const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
+            // const newExplored = [...exploredAreas, { ...tokenPos, radius: revealRadius }];
+            const newExplored = [...exploredAreas, tokenPos]; // just {x, y} — no radius!
             setExploredAreas(newExplored);
             
             // Send update to server (but not if we just received an update)
@@ -232,16 +258,21 @@
           // Create mask by "erasing" explored areas from blur canvas
           blurCtx.globalCompositeOperation = 'destination-out';
           
+          // New explored areas reveal by percentages of map width
+          const visionRadiusInMapUnits = revealRadiusPercent / 100;  // e.g. 0.08
           exploredAreas.forEach(area => {
             const x = offsetX + area.x * scaledWidth;
             const y = offsetY + area.y * scaledHeight;
-            const radius = area.radius * zoom;
             
+            // This is the key: radius based on map width, not screen pixels
+            const radius = visionRadiusInMapUnits * scaledWidth;
+            // const radius = (revealRadiusPercent / 100) * scaledWidth;
+
             const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
             gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-            gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.8)');
+            gradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.9)');
             gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-            
+
             blurCtx.fillStyle = gradient;
             blurCtx.beginPath();
             blurCtx.arc(x, y, radius, 0, Math.PI * 2);
@@ -276,7 +307,7 @@
         ctx.arc(tokenX - 3, tokenY - 3, 4, 0, Math.PI * 2);
         ctx.fill();
 
-      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadius, gmMode]);
+      }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode]);
 
       const resetExploration = () => {
         setExploredAreas([]);
@@ -447,13 +478,13 @@
                       <label className="text-gray-300 text-sm">Reveal Radius:</label>
                       <input 
                         type="range" 
-                        min="30" 
-                        max="200" 
-                        value={revealRadius} 
+                        min="1" 
+                        max="25" 
+                        value={revealRadiusPercent} 
                         onChange={(e) => handleRadiusChange(Number(e.target.value))}
                         className="w-32"
                       />
-                      <span className="text-gray-300 text-sm w-12">{revealRadius}px</span>
+                      <span className="text-gray-300 text-sm min-w-[4-em] tabular-nums">{revealRadiusPercent}%</span>
                     </div>
                   </>
                 )}

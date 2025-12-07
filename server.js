@@ -53,10 +53,12 @@ wss.on('connection', (ws, req) => {
           break;
 
         case 'radius':
-          gameState.revealRadius = data.revealRadius;
+          // Match the property name the client sends
+          gameState.revealRadius = data.revealRadiusPercent;
+
           broadcast({
             type: 'radius',
-            revealRadius: data.revealRadius
+            revealRadiusPercent: data.revealRadiusPercent
           });
           break;
 
