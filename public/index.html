@@ -307,6 +307,19 @@
         ctx.arc(tokenX - 3, tokenY - 3, 4, 0, Math.PI * 2);
         ctx.fill();
 
+        // GM-only halo
+        if (gmMode) {
+          const haloRadius = (revealRadiusPercent / 100) * scaledWidth;
+          const gradient = ctx.createRadialGradient(tokenX, tokenY, 0, tokenX, tokenY, haloRadius);
+          gradient.addColorStop(0, 'rgba(59, 130, 246, 0.75)'); // semi-transparent blue
+          gradient.addColorStop(1, 'rgba(59, 130, 246, 0)');
+          
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(tokenX, tokenY, haloRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
       }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode]);
 
       const resetExploration = () => {
