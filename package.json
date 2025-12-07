@@ -1,7 +1,7 @@
 {
   "name": "fog-of-war-vtt",
-  "version": "1.5.0",
-  "description": "Synchronized Fog of War Virtual Tabletop",
+  "version": "1.5.1",
+  "description": "Homebrew TTRPG VTT Map App",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

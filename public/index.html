@@ -258,9 +258,11 @@
           blurCtx.globalCompositeOperation = 'destination-out';
           
           const visionRadiusInMapUnits = revealRadiusPercent / 100;
-          exploredAreas.forEach(area => {
-            const x = offsetX + area.x * scaledWidth;
-            const y = offsetY + area.y * scaledHeight;
+          
+          if (gmTorchlight) {
+            // Torchlight mode: only reveal current position
+            const x = offsetX + tokenPos.x * scaledWidth;
+            const y = offsetY + tokenPos.y * scaledHeight;
             const radius = visionRadiusInMapUnits * scaledWidth;
 
             const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
@@ -272,7 +274,24 @@
             blurCtx.beginPath();
             blurCtx.arc(x, y, radius, 0, Math.PI * 2);
             blurCtx.fill();
-          });
+          } else {
+            // Normal mode: reveal all explored areas
+            exploredAreas.forEach(area => {
+              const x = offsetX + area.x * scaledWidth;
+              const y = offsetY + area.y * scaledHeight;
+              const radius = visionRadiusInMapUnits * scaledWidth;
+
+              const gradient = blurCtx.createRadialGradient(x, y, 0, x, y, radius);
+              gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+              gradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.9)');
+              gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+              blurCtx.fillStyle = gradient;
+              blurCtx.beginPath();
+              blurCtx.arc(x, y, radius, 0, Math.PI * 2);
+              blurCtx.fill();
+            });
+          }
 
           blurCtx.globalCompositeOperation = 'source-over';
         } else {
