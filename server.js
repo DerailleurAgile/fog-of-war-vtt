@@ -9,14 +9,14 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 const GM_CLIENT_ID = 'gm-' + Date.now(); // Generate once on server start
 
-
 // Game state
 let gameState = {
   tokenPos: { x: 0.85, y: 0.85 },
   exploredAreas: [],
   mapImage: null,
   revealRadiusPercent: 8,
-  gmTorchlight: false
+  gmTorchlight: false,
+  defaultTokenPos: { x: 0.85, y: 0.85 }
 };
 
 // Serve static files
@@ -24,21 +24,10 @@ app.use(express.static('public'));
 app.use('/src', express.static('src'));
 
 // Handle WebSocket connections
-let gmClient = null;
 wss.on('connection', (ws, req) => {
-
-  if (!gmClient) gmClient = ws;
-  const isGM = ws === gmClient;
   const rawIp = req.socket.remoteAddress;
   const ip = rawIp.replace(/^::ffff:/, '').replace(/^::/, '');
   console.log(`New client connected from ${ip}. Total clients: ${wss.clients.size}`);
-
-  // Send current game state to new client
-  ws.send(JSON.stringify({
-    type: 'init',
-    state: gameState,
-    isGM: isGM
-  }));
 
   ws.on('message', (message) => {
     try {
@@ -47,24 +36,24 @@ wss.on('connection', (ws, req) => {
       switch(data.type) {
         case 'requestInit':
           // Check if client has GM token
-          const isGM = data.gmToken === GM_CLIENT_ID;
+          const hasValidToken = data.gmToken === GM_CLIENT_ID;
           
           // If this is first connection and no GM exists yet, make them GM
           const noGMConnected = ![...wss.clients].some(c => c.isGM);
-          if (noGMConnected && !isGM) {
+          if (noGMConnected && !hasValidToken) {
             ws.isGM = true;
             ws.send(JSON.stringify({
               type: 'init',
               state: gameState,
               isGM: true,
-              gmToken: GM_CLIENT_ID  // Send token to cache
+              gmToken: GM_CLIENT_ID
             }));
           } else {
-            ws.isGM = isGM;
+            ws.isGM = hasValidToken;
             ws.send(JSON.stringify({
               type: 'init',
               state: gameState,
-              isGM: isGM
+              isGM: hasValidToken
             }));
           }
           break;
@@ -72,22 +61,20 @@ wss.on('connection', (ws, req) => {
         case 'move':
           gameState.tokenPos = data.tokenPos;
           gameState.exploredAreas = data.exploredAreas;
-          // Broadcast to all clients
+          gameState.defaultTokenPos = data.tokenPos;
           broadcast({
             type: 'update',
             tokenPos: data.tokenPos,
             exploredAreas: data.exploredAreas
-          });
+          }, ws);
           break;
 
         case 'radius':
-          // Match the property name the client sends
           gameState.revealRadiusPercent = data.revealRadiusPercent;
-
           broadcast({
             type: 'radius',
             revealRadiusPercent: data.revealRadiusPercent
-          });
+          }, ws);
           break;
         
         case 'torchToggle':
@@ -95,23 +82,29 @@ wss.on('connection', (ws, req) => {
           broadcast({
             type: 'torchToggle',
             torchEnabled: data.torchEnabled
-          });
+          }, ws);
           break;
 
         case 'map':
+          if (!ws.isGM) break;
           gameState.mapImage = data.mapImage;
-          broadcast({
-            type: 'map',
-            mapImage: data.mapImage
-          });
-          break;
-
-        case 'reset':
+          gameState.defaultTokenPos = { x: 0.85, y: 0.85 };
           gameState.tokenPos = { x: 0.85, y: 0.85 };
           gameState.exploredAreas = [];
           broadcast({
-            type: 'reset'
-          });
+            type: 'map',
+            mapImage: data.mapImage
+          }, ws);
+          break;
+
+        case 'reset':
+          if (!ws.isGM) break;
+          gameState.tokenPos = gameState.defaultTokenPos;
+          gameState.exploredAreas = [];
+          broadcast({
+            type: 'reset',
+            tokenPos: gameState.defaultTokenPos
+          }, ws);
           break;
       }
     } catch (error) {
@@ -124,10 +117,10 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-function broadcast(data) {
+function broadcast(data, excludeClient = null) {
   const message = JSON.stringify(data);
   wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
+    if (client !== excludeClient && client.readyState === WebSocket.OPEN) {
       client.send(message);
     }
   });

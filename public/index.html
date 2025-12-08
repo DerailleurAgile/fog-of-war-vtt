@@ -203,6 +203,13 @@
         }
       };
 
+      // Automatically enable GM mode for authenticated GMs
+      useEffect(() => {
+        if (isGM && connected) {
+          setGmMode(true);
+        }
+      }, [isGM, connected]);
+
       useEffect(() => {
         if (mapImage && !gmMode && !isReceivingUpdate.current) {
           const lastArea = exploredAreas[exploredAreas.length - 1];
@@ -228,10 +235,10 @@
       // Reset exploration and token position to defaults
       const resetExploration = () => {
         setExploredAreas([]);
-        setTokenPos(CONFIG.DEFAULTS.START_POS);
-        panZoom.resetView(); // ← Use hook's reset function
+        panZoom.resetView();
         
-        sendMessage({ type: 'reset' }); // ← Use hook's sendMessage
+        sendMessage({ type: 'reset' });
+        // Don't set tokenPos here - wait for server response
       };
       
       return (

@@ -52,7 +52,7 @@ window.useWebSocket = (
           if (data.state.gmTorchlight !== undefined) {
             setGmTorchlight(data.state.gmTorchlight);
           }
-          
+
           if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
           if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
           if (data.state.revealRadiusPercent !== undefined) {
@@ -94,7 +94,9 @@ window.useWebSocket = (
 
         case WS_MESSAGE_TYPES.RESET:
           setExploredAreas([]);
-          setTokenPos(CONFIG.DEFAULTS.START_POS);
+          // Use the position from reset message if provided, otherwise use default
+          const resetPos = data.tokenPos || CONFIG.DEFAULTS.START_POS;
+          setTokenPos(resetPos);
           setZoom(CONFIG.DEFAULTS.ZOOM);
           setPanOffset({ x: 0, y: 0 });
           break;
