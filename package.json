@@ -1,6 +1,6 @@
 {
   "name": "fog-of-war-vtt",
-  "version": "1.5.7",
+  "version": "1.6.1",
   "description": "Homebrew TTRPG VTT Map App",
   "main": "server.js",
   "scripts": {

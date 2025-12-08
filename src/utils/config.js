@@ -5,7 +5,7 @@
  * All magic numbers and constants should be defined here
  */
 
-export const CONFIG = {
+const CONFIG = {
   TOKEN: {
     RADIUS: 12,
     SHADOW_OFFSET: 2,
@@ -50,7 +50,7 @@ export const CONFIG = {
 /**
  * WebSocket message types
  */
-export const WS_MESSAGE_TYPES = {
+const WS_MESSAGE_TYPES = {
   INIT: 'init',
   UPDATE: 'update',
   RADIUS: 'radius',
@@ -63,6 +63,16 @@ export const WS_MESSAGE_TYPES = {
 /**
  * Helper to create color strings from RGB objects
  */
-export const rgbaString = (color, alpha = 1) => {
+const rgbaString = (color, alpha = 1) => {
   return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
 };
+
+// Make available globally for now (for standalone HTML)
+if (typeof window !== 'undefined') {
+  window.CONFIG = CONFIG;
+  window.WS_MESSAGE_TYPES = WS_MESSAGE_TYPES;
+  window.rgbaString = rgbaString;
+}
+
+// Export for module usage
+export { CONFIG, WS_MESSAGE_TYPES, rgbaString };
