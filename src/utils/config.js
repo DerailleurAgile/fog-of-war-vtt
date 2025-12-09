@@ -15,7 +15,7 @@ const CONFIG = {
   CANVAS: {
     BLUR_AMOUNT: 20,
     BACKGROUND_COLOR: '#2a2a2a',
-    DARKNESS_OPACITY: 0.90,
+    DARKNESS_OPACITY: 0.75,
   },
   MOVEMENT: {
     STEP: 0.02,

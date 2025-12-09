@@ -25,6 +25,10 @@
   <script type="text/babel" src="/src/components/Controls/GMControls.jsx"></script>
   <script type="text/babel" src="/src/components/Controls/Header.jsx"></script>
   <script type="text/babel" src="/src/components/Canvas/GameCanvas.jsx"></script>
+  
+  <script type="text/babel" src="/src/components/Lobby.jsx"></script>
+  <script type="text/babel" src="/src/components/Controls/GMLogin.jsx"></script>
+
 </head>
 <body>
   <div id="root"></div>
@@ -50,7 +54,17 @@
       const panZoom = usePanZoom(CONFIG.DEFAULTS.ZOOM);
       
       // Use WebSocket hook
-      const { wsRef, connected, sendMessage } = useWebSocket(
+      const { 
+        wsRef, 
+        connected, 
+        inSession,
+        sessionCode,
+        sessionError,
+        sendMessage,
+        createSession,
+        joinSession,
+        leaveSession
+      } = useWebSocket(
         setIsGM,
         setGmTorchlight,
         setTokenPos,
@@ -240,11 +254,37 @@
         sendMessage({ type: 'reset' });
         // Don't set tokenPos here - wait for server response
       };
+
+      // Lobby handlers
+      const handleCreateSession = () => {
+        createSession();
+      };
+
+      const handleJoinSession = (code) => {
+        joinSession(code);
+      };
       
       return (
         <div className="w-full h-screen bg-gray-900 flex flex-col">
+
+          {/* Show lobby modal if not in a session */}
+          {connected && !inSession && (
+            <Lobby 
+              onCreateSession={handleCreateSession}
+              onJoinSession={handleJoinSession}
+            />
+          )}
+
+          {/* Show session error if any */}
+          {sessionError && (
+            <div className="fixed top-4 right-4 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg z-50">
+              {sessionError}
+            </div>
+          )}
+          
           <Header
             connected={connected}
+            sessionCode={sessionCode}
             isGM={isGM}
             gmMode={gmMode}
             setGmMode={setGmMode}

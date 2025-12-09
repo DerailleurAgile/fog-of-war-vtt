@@ -41,6 +41,10 @@ window.GameCanvas = ({
     const blurCanvas = blurCanvasRef.current;
     if (!canvas || !blurCanvas) return;
 
+    // CRITICAL: HiDPI + responsive resize
+    setupHiDPICanvas(canvas);
+    setupHiDPICanvas(blurCanvas);
+
     const ctx = canvas.getContext('2d');
     const blurCtx = blurCanvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -105,6 +109,7 @@ window.GameCanvas = ({
     }
 
     // --- Draw token on main canvas ---
+    ctx.globalCompositeOperation = 'source-over';
     drawToken(ctx, tokenPos, layout, revealRadiusPercent, gmMode, gmTorchlight);
 
   }, [mapImage, tokenPos, exploredAreas, zoom, panOffset, revealRadiusPercent, gmMode, gmTorchlight, isDragging]);

@@ -2,6 +2,7 @@
 
 /**
  * Custom hook for managing WebSocket connection and game state sync
+ * Now handles session-based connections
  */
 window.useWebSocket = (
   setIsGM,
@@ -20,6 +21,9 @@ window.useWebSocket = (
   
   const wsRef = useRef(null);
   const [connected, setConnected] = useState(false);
+  const [inSession, setInSession] = useState(false);
+  const [sessionCode, setSessionCode] = useState(null);
+  const [sessionError, setSessionError] = useState(null);
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -29,40 +33,57 @@ window.useWebSocket = (
     ws.onopen = () => {
       console.log('Connected to server');
       setConnected(true);
-
-      // Check for cached GM token
-      const gmToken = localStorage.getItem('vtt_gm_token');
-      ws.send(JSON.stringify({
-        type: 'requestInit',
-        gmToken: gmToken || null
-      }));
+      
+      // Check if we have a cached session code
+      const cachedSessionCode = localStorage.getItem('vtt_session_code');
+      if (cachedSessionCode) {
+        console.log('Attempting to rejoin session:', cachedSessionCode);
+        ws.send(JSON.stringify({
+          type: 'joinSession',
+          sessionCode: cachedSessionCode
+        }));
+      }
     };
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       
       switch(data.type) {
-        case WS_MESSAGE_TYPES.INIT:
+        case 'sessionCreated':
+          console.log('✨ Session created:', data.sessionCode);
+          setSessionCode(data.sessionCode);
           setIsGM(data.isGM);
-          // If we're GM, cache the token
-          if (data.isGM && data.gmToken) {
-            localStorage.setItem('vtt_gm_token', data.gmToken);
-          }
+          setInSession(true);
+          setSessionError(null);
+          
+          // Cache session code
+          localStorage.setItem('vtt_session_code', data.sessionCode);
+          
+          // Load game state
+          loadGameState(data.gameState);
+          break;
 
-          if (data.state.gmTorchlight !== undefined) {
-            setGmTorchlight(data.state.gmTorchlight);
-          }
+        case 'sessionJoined':
+          console.log('👤 Joined session:', data.sessionCode);
+          setSessionCode(data.sessionCode);
+          setIsGM(data.isGM);
+          setInSession(true);
+          setSessionError(null);
+          
+          // Cache session code
+          localStorage.setItem('vtt_session_code', data.sessionCode);
+          
+          // Load game state
+          loadGameState(data.gameState);
+          break;
 
-          if (data.state.tokenPos) setTokenPos(data.state.tokenPos);
-          if (data.state.exploredAreas) setExploredAreas(data.state.exploredAreas);
-          if (data.state.revealRadiusPercent !== undefined) {
-            setRevealRadiusPercent(data.state.revealRadiusPercent);
-          }
-          if (data.state.mapImage) {
-            const img = new Image();
-            img.onload = () => setMapImage(img);
-            img.src = data.state.mapImage;
-          }
+        case 'sessionError':
+          console.error('Session error:', data.error);
+          setSessionError(data.error);
+          setInSession(false);
+          
+          // Clear invalid cached session
+          localStorage.removeItem('vtt_session_code');
           break;
 
         case WS_MESSAGE_TYPES.UPDATE:
@@ -94,7 +115,6 @@ window.useWebSocket = (
 
         case WS_MESSAGE_TYPES.RESET:
           setExploredAreas([]);
-          // Use the position from reset message if provided, otherwise use default
           const resetPos = data.tokenPos || CONFIG.DEFAULTS.START_POS;
           setTokenPos(resetPos);
           setZoom(CONFIG.DEFAULTS.ZOOM);
@@ -106,6 +126,7 @@ window.useWebSocket = (
     ws.onclose = () => {
       console.log('Disconnected from server');
       setConnected(false);
+      setInSession(false);
     };
 
     ws.onerror = (error) => {
@@ -125,6 +146,23 @@ window.useWebSocket = (
     isReceivingUpdate
   ]);
 
+  // Helper to load game state from server
+  const loadGameState = (gameState) => {
+    if (gameState.gmTorchlight !== undefined) {
+      setGmTorchlight(gameState.gmTorchlight);
+    }
+    if (gameState.tokenPos) setTokenPos(gameState.tokenPos);
+    if (gameState.exploredAreas) setExploredAreas(gameState.exploredAreas);
+    if (gameState.revealRadiusPercent !== undefined) {
+      setRevealRadiusPercent(gameState.revealRadiusPercent);
+    }
+    if (gameState.mapImage) {
+      const img = new Image();
+      img.onload = () => setMapImage(img);
+      img.src = gameState.mapImage;
+    }
+  };
+
   // Helper function to send messages
   const sendMessage = (message) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -132,10 +170,44 @@ window.useWebSocket = (
     }
   };
 
+  // Create a new session (GM only)
+  const createSession = () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'createSession'
+      }));
+    }
+  };
+
+  // Join an existing session (Players)
+  const joinSession = (code) => {
+    setSessionError(null);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'joinSession',
+        sessionCode: code
+      }));
+    }
+  };
+
+  // Leave session and clear cache
+  const leaveSession = () => {
+    localStorage.removeItem('vtt_session_code');
+    setInSession(false);
+    setSessionCode(null);
+    window.location.reload();
+  };
+
   return {
     wsRef,
     connected,
-    sendMessage
+    inSession,
+    sessionCode,
+    sessionError,
+    sendMessage,
+    createSession,
+    joinSession,
+    leaveSession
   };
 };
 
